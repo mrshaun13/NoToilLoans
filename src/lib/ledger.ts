@@ -9,6 +9,7 @@ import {
   type LoanResult,
   type PaymentPoint,
 } from "./loan.ts";
+import { parseNoteSignatures, termsVersion, type NoteSignatures } from "./esign.ts";
 import { compareResults, isAmendmentImpact, type AmendmentImpact } from "./impact.ts";
 
 export type ExtraPayment = {
@@ -43,6 +44,8 @@ export type Ledger = {
   frequency: Frequency;
   extras: ExtraPayment[];
   termChanges: TermChange[];
+  /** Present after an e-signed export. Missing on notes saved before e-sign. */
+  signatures?: NoteSignatures | null;
 };
 
 export type TermSet = {
@@ -286,6 +289,7 @@ export function ledgerFromPayload(payload: {
     note?: string;
     impact?: AmendmentImpact | null;
   }>;
+  signatures?: unknown;
 }): Ledger {
   const extras = (payload.extras ?? []).map((extra, index) => ({
     id: extra.id ?? `extra-${index + 1}`,
@@ -317,5 +321,14 @@ export function ledgerFromPayload(payload: {
     frequency: payload.frequency,
     extras,
     termChanges,
+    signatures: parseNoteSignatures(
+      payload.signatures,
+      termsVersion({
+        payment: payload.payment,
+        annualRatePct: payload.annualRatePct,
+        frequency: payload.frequency,
+        termChanges,
+      }),
+    ),
   };
 }

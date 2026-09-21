@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { format } from "date-fns";
-import { Check, Copy, Download, Lock } from "lucide-react";
+import { Check, Copy, Download, Lock, Mail } from "lucide-react";
+import { ESignApprove } from "@/components/esign-approve";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { openMailHandoff, signAsLender, termsVersion } from "@/lib/esign";
 import { formatMoney, formatPct } from "@/lib/format";
 import { frequencyMeta, parseISODate, type Frequency, type LoanResult } from "@/lib/loan";
 import {
@@ -65,6 +67,9 @@ export function StrikeLoan({
   const [filename, setFilename] = useState("");
   const [copied, setCopied] = useState(false);
   const [last, setLast] = useState<SavedStruck | null>(null);
+  const [step, setStep] = useState<"details" | "sign" | "done">("details");
+  const [sentTitle, setSentTitle] = useState("");
+  const [justSigned, setJustSigned] = useState(false);
 
   useEffect(() => {
     setLast(readLast());
@@ -73,25 +78,14 @@ export function StrikeLoan({
   const locked = !result.neverPaysOff;
   const freq = frequencyMeta(frequency);
   const payoff = result.payoffDate ? format(result.payoffDate, "MMM d, yyyy") : "—";
-  const struck = Boolean(html);
 
   function persist(next: SavedStruck) {
     window.localStorage.setItem(LAST_KEY, JSON.stringify(next));
     setLast(next);
   }
 
-  function strikeFrom(payload: StruckPayload) {
-    const nextHtml = buildStruckHtml(payload);
-    const nextName = struckFilename(payload.title);
-    downloadStruckHtml(nextHtml, nextName);
-    persist({ title: payload.title, filename: nextName, html: nextHtml });
-    setHtml(nextHtml);
-    setFilename(nextName);
-    setCopied(false);
-  }
-
-  function strike() {
-    const payload = buildStruckPayload(
+  function approveAndStrike(signingName: string) {
+    const unsigned = buildStruckPayload(
       {
         principal,
         annualRatePct: rate,
@@ -100,9 +94,31 @@ export function StrikeLoan({
         startDate,
       },
       result,
-      { title, lender, borrower },
+      { title, lender: lender.trim(), borrower: borrower.trim() },
     );
-    strikeFrom(payload);
+    const payload: StruckPayload = {
+      ...unsigned,
+      signatures: signAsLender(
+        termsVersion({
+          payment: unsigned.payment,
+          annualRatePct: unsigned.annualRatePct,
+          frequency: unsigned.frequency,
+          termChanges: unsigned.termChanges,
+        }),
+        signingName,
+      ),
+    };
+    const nextHtml = buildStruckHtml(payload);
+    const nextName = struckFilename(payload.title);
+    downloadStruckHtml(nextHtml, nextName);
+    openMailHandoff("lender", payload.title, nextName);
+    persist({ title: payload.title, filename: nextName, html: nextHtml });
+    setHtml(nextHtml);
+    setFilename(nextName);
+    setSentTitle(payload.title);
+    setCopied(false);
+    setJustSigned(true);
+    setStep("done");
   }
 
   function copyHtml() {
@@ -117,8 +133,16 @@ export function StrikeLoan({
     if (!last) return;
     setHtml(last.html);
     setFilename(last.filename);
+    setSentTitle(last.title);
     setCopied(false);
+    setJustSigned(false);
+    setStep("done");
     setOpen(true);
+  }
+
+  function openMailAgain() {
+    if (!filename) return;
+    openMailHandoff("lender", sentTitle || "Personal note", filename);
   }
 
   return (
@@ -130,6 +154,8 @@ export function StrikeLoan({
           if (!next) {
             setHtml(null);
             setCopied(false);
+            setStep("details");
+            setJustSigned(false);
           }
         }}
       >
@@ -139,14 +165,14 @@ export function StrikeLoan({
             Strike this loan
           </Button>
         </DialogTrigger>
-        <DialogContent className={struck ? "max-w-3xl" : undefined}>
-          {struck ? (
+        <DialogContent className={step === "done" ? "max-w-3xl" : undefined}>
+          {step === "done" ? (
             <>
               <DialogTitle>Note struck</DialogTitle>
               <DialogDescription>
-                Terms are locked in {filename}. The file includes a printable promissory note for
-                both of you to sign. Open it any day — it reads today's date and shows what is
-                still owed.
+                {justSigned
+                  ? `Your e-signature is in ${filename}. It should be in your downloads, and your email app should be open. Attach that HTML file and send it to the borrower. The To line is blank so you can type their address. They e-sign inside the file and send it back.`
+                  : `${filename} is the last note you struck. Download it again, or open email if you still need to send it to the borrower.`}
               </DialogDescription>
               <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                 <Button
@@ -156,6 +182,10 @@ export function StrikeLoan({
                 >
                   <Download />
                   Download again
+                </Button>
+                <Button variant="outline" className="flex-1" type="button" onClick={openMailAgain}>
+                  <Mail />
+                  Open email
                 </Button>
                 <Button variant="outline" className="flex-1" type="button" onClick={copyHtml}>
                   {copied ? <Check /> : <Copy />}
@@ -168,6 +198,23 @@ export function StrikeLoan({
                 srcDoc={html ?? undefined}
               />
             </>
+          ) : step === "sign" ? (
+            <ESignApprove
+              partyName={lender.trim()}
+              confirmId="download-ledger"
+              description="You are e-signing as the lender. The signed file downloads next, then your email app opens so you can attach it and send it to the borrower."
+              recap={
+                <p className="mt-4 rounded-md bg-muted px-4 py-3 text-sm">
+                  {formatMoney(principal)} at {formatPct(rate)} · {formatMoney(payment)}{" "}
+                  {freq.label.toLowerCase()}
+                  <span className="mt-1 block text-muted-foreground">
+                    Lent by {lender.trim()} · Borrowed by {borrower.trim()}
+                  </span>
+                </p>
+              }
+              onApprove={approveAndStrike}
+              onBack={() => setStep("details")}
+            />
           ) : (
             <>
               <DialogTitle>Strike the note</DialogTitle>
@@ -211,6 +258,7 @@ export function StrikeLoan({
                       id="note-lender"
                       className="mt-1.5"
                       placeholder="Name on the agreement"
+                      maxLength={160}
                       value={lender}
                       onChange={(e) => setLender(e.target.value)}
                     />
@@ -223,6 +271,7 @@ export function StrikeLoan({
                       id="note-borrower"
                       className="mt-1.5"
                       placeholder="Name on the agreement"
+                      maxLength={160}
                       value={borrower}
                       onChange={(e) => setBorrower(e.target.value)}
                     />
@@ -231,16 +280,25 @@ export function StrikeLoan({
               </div>
 
               <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
-                Names go on a printable promissory note inside the file — interest method, extra
-                payments of any size, and how payoff is recalculated. Regular deposits are assumed
-                on time. If extra is paid or the terms change, open this file here, log it, and
-                export again.
+                Names go on the promissory note inside the file. Next you e-sign as the lender.
+                Regular deposits are assumed on time. Extra payments stay on this signature. A
+                change to the payment, rate, or frequency needs you to e-sign again.
               </p>
 
-              <Button id="download-ledger" className="mt-5 w-full" type="button" onClick={strike}>
-                <Download />
-                Strike and download HTML
+              <Button
+                id="continue-esign"
+                className="mt-5 w-full"
+                type="button"
+                disabled={!lender.trim() || !borrower.trim()}
+                onClick={() => setStep("sign")}
+              >
+                Continue to e-sign
               </Button>
+              {!lender.trim() || !borrower.trim() ? (
+                <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                  Add both names so they appear on the note and the signature.
+                </p>
+              ) : null}
             </>
           )}
         </DialogContent>
