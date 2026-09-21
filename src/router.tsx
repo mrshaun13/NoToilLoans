@@ -6,6 +6,5 @@ export function getRouter() {
   return createRouter({
     routeTree,
     defaultErrorComponent: AppErrorComponent,
-    basepath: "/NoToilLoans",
   });
 }

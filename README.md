@@ -2,7 +2,7 @@
 
 A ledger for cheap personal loans between people who trust each other.
 
-**Live:** [mrshaun13.github.io/NoToilLoans](https://mrshaun13.github.io/NoToilLoans/)
+**Live:** [loans.toil404.com](https://loans.toil404.com/)
 
 Set the amount, rate, and payment. Strike a note as a single HTML file. Bring that file back later to log extra payments or new terms. History through that date stays; everything after is recalculated. Both parties can print and sign the agreement.
 
@@ -52,11 +52,11 @@ npm install
 npm run dev
 ```
 
-Open the printed URL (the app is served under `/NoToilLoans/`, same as GitHub Pages). `npm run build` produces a static site.
+Open the printed URL. `npm run build` produces a static site.
 
 ## Hosting
 
-GitHub Pages. Push to `main` and the Actions workflow deploys [https://mrshaun13.github.io/NoToilLoans/](https://mrshaun13.github.io/NoToilLoans/).
+GitHub Pages, served at the root of [https://loans.toil404.com/](https://loans.toil404.com/). Push to `main` and the Actions workflow deploys it.
 
 ## Privacy
 

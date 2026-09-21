@@ -4,7 +4,8 @@ import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  base: "/NoToilLoans/",
+  // Custom domain loans.toil404.com serves this project site at the root.
+  base: "/",
   server: {
     host: "0.0.0.0",
     port: 5173,
