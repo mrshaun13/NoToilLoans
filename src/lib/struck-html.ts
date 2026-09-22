@@ -1,4 +1,12 @@
 import { format } from "date-fns";
+import {
+  parseNoteSignatures,
+  signaturesForDocument,
+  termsVersion,
+  type NoteSignatures,
+  type PartySignature,
+} from "./esign.ts";
+import { esignRuntimeSource } from "./esign-runtime.ts";
 import { formatMoney, formatPct } from "./format.ts";
 import { htmlThemeCss, isHtmlTheme, type HtmlTheme } from "./html-theme.ts";
 import { describeImpact } from "./impact.ts";
@@ -69,6 +77,7 @@ export type StruckPayload = {
   originalSchedule: Array<{ date: string; balance: number }>;
   priorPaths: Array<{ id: string; label: string; points: Array<{ date: string; balance: number }> }>;
   schedule: StruckScheduleRow[];
+  signatures: NoteSignatures;
 };
 
 export function buildStruckPayload(
@@ -154,6 +163,15 @@ export function buildStruckPayloadFromLedger(
       impactDetail: point.impact ? describeImpact(point.impact).detail : "",
       impactTone: point.impact ? describeImpact(point.impact).tone : "",
     })),
+    signatures: signaturesForDocument(
+      ledger.signatures,
+      termsVersion({
+        payment: ledger.payment,
+        annualRatePct: ledger.annualRatePct,
+        frequency: ledger.frequency,
+        termChanges: ledger.termChanges,
+      }),
+    ),
   };
 }
 
@@ -407,9 +425,74 @@ export function buildStruckHtml(payload: StruckPayload): string {
     .terms { font-size: .875rem; color: var(--muted-fg); }
     .terms strong { color: var(--fg); font-weight: 600; }
     .stamp { margin-top: 1.5rem; font-size: .75rem; color: var(--muted-fg); }
+    [hidden] { display: none !important; }
+    .sign-script {
+      font-family: "Segoe Script", "Snell Roundhand", "Apple Chancery", "Brush Script MT", "Segoe Print", cursive;
+      font-size: 1.9rem;
+      line-height: 1.15;
+      margin: 0 0 .2rem;
+      min-height: 2.4rem;
+    }
+    .sign-script-ghost { color: var(--muted-fg); font-size: 1.45rem; }
+    .sign-line-short { height: 1.75rem; }
+    .sign-status { margin-top: 1.25rem; }
+    .sign-cta, .sign-submit, .sign-input { font: inherit; color: inherit; }
+    .sign-cta {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 0;
+      border-radius: .75rem;
+      padding: .35rem 0;
+      cursor: pointer;
+    }
+    .sign-cta:hover .sign-script-ghost { color: var(--fg); }
+    .sign-form { display: flex; flex-direction: column; gap: .5rem; margin-top: .35rem; }
+    .sign-label { font-size: .8rem; color: var(--muted-fg); }
+    .sign-input {
+      min-height: 2.75rem;
+      border-radius: .75rem;
+      border: 1px solid var(--border);
+      background: var(--muted);
+      color: var(--fg);
+      padding: 0 .85rem;
+    }
+    .sign-submit {
+      min-height: 2.75rem;
+      border: 0;
+      border-radius: .75rem;
+      background: var(--primary);
+      color: var(--primary-fg);
+      padding: 0 1rem;
+      cursor: pointer;
+    }
+    .sign-print-only { display: none; }
+    .esign-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(28, 25, 20, .45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .esign-card {
+      width: min(28rem, 100%);
+      background: var(--card);
+      color: var(--fg);
+      border-radius: 1.5rem;
+      padding: 1.35rem 1.35rem 1.2rem;
+      box-shadow: var(--shadow);
+    }
+    .esign-card h2 { margin: .2rem 0 .6rem; font-size: 1.7rem; }
+    .esign-card p { margin: 0; }
+    .esign-actions { display: flex; flex-direction: column; gap: .5rem; margin-top: 1.1rem; }
     @media print {
       body { background: white; color: black; }
-      .no-print, .theme-switch, .chart, .legend, .mix, .years, .log, details, #events { display: none !important; }
+      .no-print, .theme-switch, .chart, .legend, .mix, .years, .log, details, #events, .esign-modal, .sign-screen-only, .sign-form, .sign-cta { display: none !important; }
+      .sign-print-only { display: block !important; }
       .hero, .card { box-shadow: none; border: 1px solid #ddd; break-inside: avoid; }
       .agreement { page-break-before: always; box-shadow: none; }
     }
@@ -486,11 +569,12 @@ export function buildStruckHtml(payload: StruckPayload): string {
 
     ${agreementHtml(payload)}
 
-    <p class="stamp no-print">Struck ${escapeHtml(formatLong(payload.struckOn))} with No Toil Loans. Interest is simple, actual days / 365, recalculated on the remaining balance after each payment. To record an extra payment or change terms, open this file in No Toil Loans.</p>
+    <p class="stamp no-print">Struck ${escapeHtml(formatLong(payload.struckOn))} with No Toil Loans. Interest is simple, actual days / 365, recalculated on the remaining balance after each payment. To record an extra payment or change terms, open this file in No Toil Loans. A change to the payment, rate, or frequency needs a new lender e-signature. An extra payment does not.</p>
   </main>
+  ${esignModalHtml()}
   <script type="application/json" id="paydown-loan">${jsonForScript(payload)}</script>
   <script>
-    const LOAN = ${jsonForScript(payload)};
+    const LOAN = JSON.parse(document.getElementById("paydown-loan").textContent);
 
     function parseISO(iso) {
       const p = iso.split("-").map(Number);
@@ -869,6 +953,7 @@ export function buildStruckHtml(payload: StruckPayload): string {
     } catch (err) {}
 
     render();
+    ${esignRuntimeSource()}
   </script>
 </body>
 </html>`;
@@ -881,6 +966,75 @@ function formatLong(iso: string): string {
 function parseISODateSafe(iso: string): Date {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function formatSignedAt(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return format(date, "MMM d, yyyy, h:mm a");
+}
+
+function signStatusText(signatures: NoteSignatures | undefined): string {
+  if (signatures?.lender && signatures.borrower) {
+    return "Both parties have e-signed this version of the note. Signatures are locked.";
+  }
+  if (signatures?.lender) {
+    return "The lender has e-signed. The borrower e-signs once in this file, then emails it back.";
+  }
+  return "";
+}
+
+function blankSignHtml(role: string, partyName: string): string {
+  const who = partyName ? `${role} · ${partyName}` : role;
+  return `<div class="sign-line"></div>
+          <p class="sign-meta">${escapeHtml(who)}</p>
+          <div class="sign-line sign-line-short"></div>
+          <p class="sign-meta">Date</p>`;
+}
+
+function lockedSignHtml(role: string, signature: PartySignature): string {
+  return `<p class="sign-script">${escapeHtml(signature.name)}</p>
+          <p class="sign-meta">Electronically signed · ${escapeHtml(role)}</p>
+          <p class="sign-meta">${escapeHtml(formatSignedAt(signature.signedAt))}</p>`;
+}
+
+function partySignHtml(
+  role: "Lender" | "Borrower",
+  partyName: string,
+  signature: PartySignature | null,
+  interactiveBorrower: boolean,
+): string {
+  if (signature) return lockedSignHtml(role, signature);
+  const blank = blankSignHtml(role, partyName);
+  if (!interactiveBorrower) return blank;
+  const who = partyName ? `Borrower · ${partyName}` : "Borrower";
+  return `<div class="sign-screen-only">
+          <button type="button" class="sign-cta" id="borrower-sign-open">
+            <span class="sign-script sign-script-ghost">Click to e-sign</span>
+            <span class="sign-meta">${escapeHtml(who)}</span>
+          </button>
+          <form class="sign-form" id="borrower-sign-form" hidden>
+            <label class="sign-label" for="borrower-sign-name">Signing name</label>
+            <input id="borrower-sign-name" class="sign-input" maxlength="160" autocomplete="name" value="${escapeHtml(partyName)}" />
+            <button type="submit" class="sign-submit">Yes, I approve e-signing this doc</button>
+            <p class="sign-meta">Your typed name is the signature. The dual-signed file downloads so you can email it back to the lender.</p>
+          </form>
+        </div>
+        <div class="sign-print-only">${blank}</div>`;
+}
+
+function esignModalHtml(): string {
+  return `<div id="esign-modal" class="esign-modal no-print" hidden>
+    <div class="esign-card" role="dialog" aria-modal="true" aria-labelledby="esign-modal-title">
+      <p class="kicker">One step left</p>
+      <h2 id="esign-modal-title">E-sign this note and send it back</h2>
+      <p>The lender has already e-signed this promissory note. Review it, then e-sign with your name. A dual-signed copy will download, and your email app will open so you can attach that file and send it to the lender.</p>
+      <div class="esign-actions">
+        <button type="button" class="sign-submit" id="esign-now">Review and e-sign</button>
+        <button type="button" class="print-btn" id="esign-later">I'll review first</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function agreementHtml(payload: StruckPayload): string {
@@ -909,7 +1063,7 @@ function agreementHtml(payload: StruckPayload): string {
         <div>
           <p class="kicker">Promissory note</p>
           <h2>${escapeHtml(payload.title)}</h2>
-          <p class="lede">Print this page. Both parties sign. Keep it with the ledger file.</p>
+          <p class="lede">Typed names below are electronic signatures kept in this file. You can still print this page.</p>
         </div>
         <button type="button" class="print-btn no-print" onclick="window.print()">Print agreement</button>
       </div>
@@ -937,7 +1091,7 @@ function agreementHtml(payload: StruckPayload): string {
         </li>
         <li>
           <strong>5. Changes to terms</strong>
-          The parties may agree to a new payment amount, interest rate, or frequency from a stated date forward. History through that date stays as logged. Each change is recorded in this file with its effect on the life of the loan and the interest paid.
+          The parties may agree to a new payment amount, interest rate, or frequency from a stated date forward. History through that date stays as logged. Each change is recorded in this file with its effect on the life of the loan and the interest paid. A change to the payment, rate, or frequency requires the lender to e-sign the new terms and send a fresh copy. The earlier borrower signature does not carry onto that copy. An extra payment does not require a new signature.
         </li>
         <li>
           <strong>6. Prepayment</strong>
@@ -948,19 +1102,10 @@ function agreementHtml(payload: StruckPayload): string {
           This file is the payment log for the note. Opening it on a given day shows the amount still owed as of that date. To log an extra payment or a change of terms, open this file in No Toil Loans and export an updated copy.
         </li>
       </ol>
+      <p class="hint sign-status" id="sign-status">${escapeHtml(signStatusText(payload.signatures))}</p>
       <div class="signs">
-        <div>
-          <div class="sign-line"></div>
-          <p class="sign-meta">Lender${lenderName ? ` · ${escapeHtml(lenderName)}` : ""}</p>
-          <div class="sign-line" style="height:1.75rem"></div>
-          <p class="sign-meta">Date</p>
-        </div>
-        <div>
-          <div class="sign-line"></div>
-          <p class="sign-meta">Borrower${borrowerName ? ` · ${escapeHtml(borrowerName)}` : ""}</p>
-          <div class="sign-line" style="height:1.75rem"></div>
-          <p class="sign-meta">Date</p>
-        </div>
+        <div id="lender-sign">${partySignHtml("Lender", lenderName, payload.signatures?.lender ?? null, false)}</div>
+        <div id="borrower-sign">${partySignHtml("Borrower", borrowerName, payload.signatures?.borrower ?? null, Boolean(payload.signatures?.lender && !payload.signatures?.borrower))}</div>
       </div>
     </section>`;
 }
@@ -1023,6 +1168,15 @@ export function parseStruckHtml(html: string): StruckPayload | null {
       originalSchedule: Array.isArray(parsed.originalSchedule) ? parsed.originalSchedule : [],
       priorPaths: Array.isArray(parsed.priorPaths) ? parsed.priorPaths : [],
       schedule: Array.isArray(parsed.schedule) ? (parsed.schedule as StruckPayload["schedule"]) : [],
+      signatures: parseNoteSignatures(
+        parsed.signatures,
+        termsVersion({
+          payment: parsed.payment,
+          annualRatePct: parsed.annualRatePct,
+          frequency: parsed.frequency,
+          termChanges,
+        }),
+      ),
     };
   } catch {
     return null;

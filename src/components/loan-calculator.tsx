@@ -368,7 +368,7 @@ export function LoanCalculator() {
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
                 {result.neverPaysOff
                   ? "Raise the payment until it actually pays off, then lock the terms into a file."
-                  : "Locks these terms into a file. Bring it back here later to log extra payments or change the terms."}
+                  : "You e-sign as the lender, then email the file to the borrower. Bring it back later to log extra payments or change the terms."}
               </p>
             </div>
           </aside>

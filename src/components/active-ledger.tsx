@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { AlertTriangle, Download, RotateCcw, Undo2 } from "lucide-react";
+import { AlertTriangle, Download, Mail, RotateCcw, Undo2 } from "lucide-react";
+import { ESignApprove } from "@/components/esign-approve";
 import { AsOfStatus } from "@/components/as-of-status";
 import { ImpactCard } from "@/components/impact-card";
 import { LoanMix } from "@/components/loan-mix";
@@ -9,8 +10,16 @@ import { PaymentSchedule } from "@/components/payment-schedule";
 import { SliderField } from "@/components/slider-field";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  exportNeedsLenderResign,
+  openMailHandoff,
+  signAsLender,
+  signaturesMatchVersion,
+  termsVersion,
+} from "@/lib/esign";
 import { formatCount, formatMoney, formatPct } from "@/lib/format";
 import {
   addExtraPayment,
@@ -74,6 +83,9 @@ export function ActiveLedger({
   const [changeFrequency, setChangeFrequency] = useState<Frequency>(live.frequency);
   const [changeNote, setChangeNote] = useState("");
   const [exportedHtml, setExportedHtml] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
+  const [mailFile, setMailFile] = useState<{ title: string; filename: string } | null>(null);
+  const [signOpen, setSignOpen] = useState(false);
   const [asOf, setAsOf] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -145,6 +157,8 @@ export function ActiveLedger({
     setExtraAmount("");
     setExtraNote("");
     setExportedHtml(null);
+    setExportNotice(null);
+    setMailFile(null);
   }
 
   function applyTerms() {
@@ -160,15 +174,58 @@ export function ActiveLedger({
     );
     setChangeNote("");
     setExportedHtml(null);
+    setExportNotice(null);
+    setMailFile(null);
+  }
+
+  const version = termsVersion(ledger);
+  const needsResign = exportNeedsLenderResign(ledger.signatures, version, ledger.termChanges.length);
+  const signaturesCurrent = signaturesMatchVersion(ledger.signatures, version);
+
+  function publishExport(html: string, filename: string, notice: string, mailed: boolean) {
+    downloadStruckHtml(html, filename);
+    setExportedHtml(html);
+    setExportNotice(notice);
+    setMailFile(mailed ? { title: ledger.title, filename } : null);
   }
 
   function exportUpdated() {
     if (result.neverPaysOff) return;
+    if (needsResign) {
+      setSignOpen(true);
+      return;
+    }
     const payload = buildStruckPayloadFromLedger(ledger, result);
     const html = buildStruckHtml(payload);
     const filename = struckFilename(ledger.title);
-    downloadStruckHtml(html, filename);
-    setExportedHtml(html);
+    publishExport(
+      html,
+      filename,
+      payload.signatures.lender
+        ? `Downloaded ${filename}. Signatures on this version stay as they are. Extra payments do not need another signature.`
+        : `Downloaded ${filename}.`,
+      false,
+    );
+  }
+
+  function approveResign(name: string) {
+    const signatures = signAsLender(version, name);
+    const next = { ...ledger, signatures };
+    onChange(next);
+    const payload = buildStruckPayloadFromLedger(next, result);
+    const html = buildStruckHtml(payload);
+    const filename = struckFilename(next.title);
+    const clearedBorrower = Boolean(ledger.signatures?.borrower);
+    publishExport(
+      html,
+      filename,
+      clearedBorrower
+        ? `Downloaded ${filename}. Your email app should be open — attach that file and send it to the borrower. Their earlier signature is not on this copy.`
+        : `Downloaded ${filename}. Your email app should be open — attach that file and send it to the borrower. The To line is blank so you can type their address.`,
+      true,
+    );
+    openMailHandoff("lender", next.title, filename);
+    setSignOpen(false);
   }
 
   const amendments = amendmentCount(ledger);
@@ -401,6 +458,8 @@ export function ActiveLedger({
               onClick={() => {
                 onChange(undoLastAmendment(ledger));
                 setExportedHtml(null);
+                setExportNotice(null);
+                setMailFile(null);
               }}
             >
               <Undo2 />
@@ -416,20 +475,66 @@ export function ActiveLedger({
             disabled={result.neverPaysOff}
           >
             <Download />
-            Export updated HTML
+            {needsResign ? "E-sign and export HTML" : "Export updated HTML"}
           </Button>
-          {exportedHtml ? (
-            <iframe
-              title="Updated ledger preview"
-              className="mt-4 h-64 w-full rounded-xl bg-background"
-              srcDoc={exportedHtml}
-            />
+          {exportNotice ? (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{exportNotice}</p>
+          ) : needsResign ? (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              Payment, rate, or frequency changed. Exporting asks you to e-sign again and leaves
+              the borrower signature off so you can send a fresh copy.
+            </p>
+          ) : signaturesCurrent ? (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {ledger.signatures?.borrower
+                ? "Both signatures are on this version. An extra payment does not ask anyone to sign again."
+                : "Your signature is on this version. An extra payment does not ask you to sign again."}
+            </p>
           ) : (
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
               Downloads a new file with the payment log baked in. Open it later and remaining
               balance still follows the calendar.
             </p>
           )}
+          {mailFile ? (
+            <Button
+              variant="outline"
+              className="mt-3 w-full"
+              type="button"
+              onClick={() => openMailHandoff("lender", mailFile.title, mailFile.filename)}
+            >
+              <Mail />
+              Open email
+            </Button>
+          ) : null}
+          {exportedHtml ? (
+            <iframe
+              title="Updated ledger preview"
+              className="mt-4 h-64 w-full rounded-xl bg-background"
+              srcDoc={exportedHtml}
+            />
+          ) : null}
+          <Dialog open={signOpen} onOpenChange={setSignOpen}>
+            <DialogContent>
+              <ESignApprove
+                partyName={ledger.lender}
+                description="Payment, rate, or frequency changed, so this note needs your signature again. The borrower e-signs the new file after you send it."
+                recap={
+                  <p className="mt-4 rounded-md bg-muted px-4 py-3 text-sm">
+                    {formatMoney(live.payment)} {freq?.label.toLowerCase() ?? ""} at{" "}
+                    {formatPct(live.annualRatePct)}
+                    <span className="mt-1 block text-muted-foreground">
+                      {ledger.title}
+                      {ledger.lender ? ` · Lent by ${ledger.lender}` : ""}
+                      {ledger.borrower ? ` · Borrowed by ${ledger.borrower}` : ""}
+                    </span>
+                  </p>
+                }
+                onApprove={approveResign}
+                onBack={() => setSignOpen(false)}
+              />
+            </DialogContent>
+          </Dialog>
         </aside>
 
         <section className="min-w-0 space-y-6 lg:col-span-2">
